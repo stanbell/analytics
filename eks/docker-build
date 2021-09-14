@@ -1,0 +1,12 @@
+if [ $# -ne 1 ]; then
+    echo "specify the version"
+    exit 1
+fi
+ver=$1
+## docker build, tag
+docker rm --force analytics
+docker rmi analytics:$ver
+## create image
+docker build --no-cache --tag analytics:$ver -f /dist/analytics/Dockerfile .
+docker tag analytics:$ver 575680072252.dkr.ecr.us-west-2.amazonaws.com/analytics:$ver
+docker images

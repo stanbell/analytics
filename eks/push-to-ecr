@@ -1,0 +1,8 @@
+if [ $# -ne 1 ]; then
+    echo "specify the version"
+    exit 1
+fi
+ver=$1
+## push to aws ecr
+aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin 575680072252.dkr.ecr.us-west-2.amazonaws.com
+docker push 575680072252.dkr.ecr.us-west-2.amazonaws.com/analytics:$ver
