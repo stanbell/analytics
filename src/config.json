@@ -1,4 +1,12 @@
 {
     "logsPath": "/home/stan/F/Projects/EHCServer/logs/test",
-    "analyticsPath": "/home/stan/F/Projects/EHCServer/logs"
+    "analyticsPath": "/home/stan/F/Projects/EHCServer/logs/test/",
+    "delimiter": "^",
+    "database": {
+        "host": "ehccea3.ctucfvpq54ed.us-east-2.rds.amazonaws.com",
+        "port": 3306,
+        "schema": "EHCCEA",
+        "user": "ehcappprod",
+        "pwd": "aTB5X9p2Dcy8ndBSswc7xks7pvYjGhvh"
+    }
 }
