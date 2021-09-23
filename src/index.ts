@@ -31,7 +31,7 @@ interface LogRow {
 interface Admission { patientId: string, hospitalId: string, encounterId: string, noLongerEligible: string };
 interface User { user: string, patientId: string, encounterId: string, hospitalId: string, eulaAcceptedDate: string, createdDate: string, currentRole: string, invitedDate: string, invitedBy: string, noLongerEligible: string, removedDate: string, removedBy: string };
 interface UserRole { user: string, changedTo: string, changedDate: string, changedBy: string };
-interface Navigation { user: string, toPage: string, arrivedTime: string, departedTime: string, duration: number, depth: number, device: string };
+interface Navigation { user: string, toPage: string, arrivedTime: string, departedTime: string, duration: number, depth: number, device: string, timeout: boolean };
 interface Session { user: string, device: string, sessionStart: string, lastNavigation: string, duration: number, depth: number };
 interface Survey { user: string, responseTime: string, question?: string, response?: string, responseIndex?: number[], comment?: string };
 
@@ -77,12 +77,14 @@ async function go() {
         const users = await getUsers();
         writeUsers(users, fileNames.user);
 
-        // nav, sessions, userRoles, surveys from the logs
+        // nav, userRoles, surveys from the logs
         let dataObj: LogRow[] | undefined;
+        let navigations: Navigation[] = []; // | undefined = [];
         // read logs directory
-        const logs = fs.readdirSync(config.logsPath).map((logFile: fs.PathLike) => {
-            return path.join(config.logsPath, logFile.toString());
-        })
+        const logs = 
+            fs.readdirSync(config.logsPath).map((logFile: fs.PathLike) => {
+                return path.join(config.logsPath, logFile.toString());
+            })
             .filter((file: string) => {
                 // only the .logs
                 return (path.extname(file).toLowerCase() === '.log');
@@ -92,17 +94,15 @@ async function go() {
                 console.log('log', log)
                 dataObj = getLogData(log);
                 if (dataObj && dataObj.length > 0) {
-                    // writeAdmissions(getAdmissions(dataObj), fileNames.admission);
-                    // writeUsers(getUsers(dataObj), fileNames.user);
                     writeUserRoles(getUserRoles(dataObj), fileNames.userRole);
-                    const navAndSsn = getNavigation(dataObj);
-                    // console.log(util.inspect(navAndSsn));
-                    writeNavigations(navAndSsn.navigations, fileNames.navigation);
-                    writeSessions(navAndSsn.sessions, fileNames.session);
-                    // getNavigation(dataObj);  // also gets sessions
                     writeSurveys(getSurveys(dataObj), fileNames.survey);
+                    const navs = getNavigation(dataObj);
+                    navigations.push(...navs);
                 }
             });
+            console.log('navigations', navigations.length)
+            writeNavigations(navigations, fileNames.navigation);
+            writeSessions(getSessions(navigations), fileNames.session);
 
         console.log('done');
         process.exit();
@@ -262,11 +262,11 @@ function parseOtherObject(toBeParsed?: string): Object {
 function parseCallBody(body?: string): Object {
     var parsed: { [k: string]: any } = {};
     if (!!body) {
-        console.log('body', body);
+        // console.log('body', body);
         const x = body.substring(body.indexOf('{'));
         parsed = (x) ? JSON.parse(x) : {};
     }
-    console.log('parsed', parsed);
+    // console.log('parsed', parsed);
     return parsed;
 }
 
@@ -287,7 +287,7 @@ function getUserRoles(logs?: LogRow[]): UserRole[] {
                 // return (callBody?.includes('ROLE') || callBody?.includes('CREATE'));
             })
         ur.map((entry: LogRow) => {
-            console.log('raw', entry.variableContentTwo)
+            // console.log('raw', entry.variableContentTwo)
             const y: any = parseCallBody(entry.variableContentTwo);
             // const x = (entry.variableContentTwo) ?
             //     entry.variableContentTwo.substring(entry.variableContentTwo.indexOf('{'))
@@ -308,10 +308,11 @@ function getUserRoles(logs?: LogRow[]): UserRole[] {
     return userRoles;
 }
 
-function getNavigation(logs?: LogRow[]): { navigations: Navigation[], sessions: Session[] } {
+function getNavigation(logs?: LogRow[]): Navigation[] {
     // console.log('logs', util.inspect(logs));
+    const TIMEOUT_DURATION = 60 * 5;  // 5 minutes
     let navigations: Navigation[] = [];
-    let sessions: Session[] = [];
+
     if (!!logs) {
         const nav = logs.filter((entry: LogRow) => {
             return entry.entryType === 'CLIENT-NAV';
@@ -325,7 +326,8 @@ function getNavigation(logs?: LogRow[]): { navigations: Navigation[], sessions: 
                 departedTime: '',
                 duration: 0,
                 depth: toPage.depth,
-                device: entry.message
+                device: entry.message,
+                timeout: false
             };
             navigations.push(navigation);
         })
@@ -335,7 +337,6 @@ function getNavigation(logs?: LogRow[]): { navigations: Navigation[], sessions: 
             return (a2.user.localeCompare(b2.user) ||
                 a2.device.localeCompare(b2.device) ||
                 a2.arrivedTime.localeCompare(b2.arrivedTime));
-            // TODO add time here too, time within device within user
         })
             .map((entry: Navigation, index, navs) => {
                 // no values for last item for given user
@@ -346,13 +347,47 @@ function getNavigation(logs?: LogRow[]): { navigations: Navigation[], sessions: 
                     }
                 }
             });
-        // let sessions: Session[] = [];
-        // get the first and last time values for each user
-        // already sorted by user
-        let session: Session;
-        const TIMEOUT_DURATION = 60 * 5;  // 5 minutes
-        navigations.map((entry: Navigation, index, navs) => {
-            if (index === 0) {
+        navigations.map((entry: Navigation) => {
+            if (entry.duration > TIMEOUT_DURATION) {
+                // substitute arrived + timeout for departed time
+                // console.log('fixing duration', entry.duration);
+                const a = new Date(new Date(entry.arrivedTime).valueOf() + (TIMEOUT_DURATION * 1000));
+                entry.departedTime = a.toISOString();
+                // console.log('arrived', entry.arrivedTime);
+                // console.log('new departed', entry.departedTime);
+                entry.duration = duration(entry.arrivedTime, entry.departedTime);
+                entry.timeout = true;
+                // console.log('new duration', entry.duration);
+            }
+        });
+    }
+    // if (navigations.length > 0) console.log('navigations', navigations.length);
+    return navigations;
+}
+
+
+// interface Navigation { user: string, toPage: string, arrivedTime: string, departedTime: string, duration: number, depth: number, device: string };
+function getSessions(navigations?: Navigation[]): Session[] {
+    // let sessions: Session[] = [];
+    // get the first and last time values for each user
+    // already sorted by user, device, time
+    const debug = false;
+    let sessions: Session[] = [];
+    let session: Session;
+
+    let savedTheSession: boolean = true;
+    if (navigations) {
+        navigations.sort((a, b) => {  // device within user
+            const a2 = a as unknown as Navigation;
+            const b2 = b as unknown as Navigation;
+            return (a2.user.localeCompare(b2.user) ||
+                a2.device.localeCompare(b2.device) ||
+                a2.arrivedTime.localeCompare(b2.arrivedTime));
+        })
+        .map((entry: Navigation, index, navs) => {
+            if (debug) console.log(index, util.inspect(entry));
+            if (debug) console.log(session, 'session');
+            if (savedTheSession) {
                 session = {
                     user: entry.user,
                     device: entry.device,
@@ -361,72 +396,139 @@ function getNavigation(logs?: LogRow[]): { navigations: Navigation[], sessions: 
                     duration: 0,
                     depth: 0
                 };
-                // console.log('first', session);
-            } else {
-                if (index !== navs.length - 1) { // not the last one
-                    // console.log('not last')
-                    if (entry.user !== navs[index + 1].user) {
-                        // this is the last entry for the current user
-                        // get the "end" fields
-                        session.depth = (session.depth >= entry.depth) ? session.depth : entry.depth;
-                        session.lastNavigation = entry.arrivedTime;
-                        session.duration = duration(session.sessionStart, session.lastNavigation);
-                        // save it
-                        // console.log('saving at end of user', session);
-                        let copy = { ...session };
-                        sessions.push(copy);
-                        // initialize for next user
-                        session.user = navs[index + 1].user;
-                        session.sessionStart = navs[index + 1].arrivedTime;
-                        session.duration = 0;
-                        session.lastNavigation = '';
-                        session.depth = 0;
-                        // console.log('starting for', navs[index + 1].user, session);
-                    } else {
-                        // same user (or first entry for next user)
-                        session.user = entry.user;
-                        session.device = entry.device;
-                        session.lastNavigation = entry.departedTime;
-                        session.depth = (session.depth >= entry.depth) ? session.depth : entry.depth;
-                        const testDuration = duration(entry.arrivedTime, entry.departedTime);
-                        // console.log('duration', testDuration, 'timeout', TIMEOUT_DURATION, (Number(session.duration) > TIMEOUT_DURATION))
-                        if (testDuration > TIMEOUT_DURATION) {
-                            // end the current session, 
-                            // reset lastNavigation to previous & set duration 
-                            session.lastNavigation = navs[index - 1].departedTime;
-                            session.duration = (!!navs[index - 1].departedTime) ? duration(session.sessionStart, session.lastNavigation) : 0;
-                            // console.log('saving at timeout', session);
-                            let copy = { ...session };
-                            sessions.push(copy);
-                            // start a new one
-                            // initialize for next user/span  (next row might be a new user)
-                            session.user = navs[index + 1].user;
-                            session.sessionStart = navs[index + 1].arrivedTime;
-                            session.duration = 0;
-                            session.lastNavigation = '';
-                            session.depth = 0;
-                            // console.log('starting after timeout', navs[index + 1].user, session);
-                        } // else console.log('setting for same', session);
-                    };
-                } else {  // is the last one
-                    session.lastNavigation = entry.arrivedTime;
-                    session.duration = duration(session.sessionStart, session.lastNavigation);
-                    session.depth = (session.depth >= entry.depth) ? session.depth : entry.depth;
-                    let copy = { ...session };
-                    sessions.push(copy);
-                    // console.log('saving last', session);
-                }
+                if (debug) console.log('new session', session);
+                savedTheSession = false;
             }
-
-        })
-
-        // TODO investigate logs w 0 sessions
-
+            if (entry.timeout) {
+                // no end time, end of session
+                session.lastNavigation = entry.arrivedTime;
+                // session.duration = duration(session.sessionStart, session.lastNavigation);
+                if (debug) console.log('saving because timed out', session)
+                let copy = { ...session };
+                sessions.push(copy);
+                // start new session with the following entry
+                savedTheSession = true;
+            } else if (!entry.departedTime) {
+                // no end time, end of session
+                session.lastNavigation = entry.arrivedTime;
+                // session.duration = duration(session.sessionStart, session.lastNavigation);
+                if (debug) console.log('saving because no departed time', session)
+                let copy = { ...session };
+                sessions.push(copy);
+                // start new session with the following entry
+                savedTheSession = true;
+            } else if ((entry.device !== session.device)
+                || (entry.user !== session.user)) {
+                // different user or different device
+                // that's the end of the session, 
+                // session.duration = duration(session.sessionStart, session.lastNavigation);
+                if (debug) console.log('saving because different user or entry', session)
+                let copy = { ...session };
+                sessions.push(copy);
+                // start new session with the following entry
+                savedTheSession = true;
+            } else {
+                // update the session end time & depth
+                session.lastNavigation = entry.departedTime;
+                session.duration += entry.duration;
+                session.depth = (session.depth >= entry.depth) ? session.depth : entry.depth;
+                savedTheSession = false;
+            }
+        });
+        if (!savedTheSession) {
+            // write the last one, unless we just did
+            // @ts-ignore
+            if (debug) console.log('saving last', session);
+            // @ts-ignore
+            let copy = { ...session };
+            sessions.push(copy);
+        }
     }
-    if (navigations.length > 0) console.log('navigations', navigations.length);
     if (sessions.length > 0) console.log('sessions', sessions.length);
-    return { navigations: navigations, sessions: sessions };
+    return sessions;
 }
+// function getSessions(navigations?: Navigation[]): Session[] {
+//     // let sessions: Session[] = [];
+//     // get the first and last time values for each user
+//     // already sorted by user, device, time
+//     let sessions: Session[] = [];
+//     let session: Session;
+//     const TIMEOUT_DURATION = 60 * 5;  // 5 minutes
+//     if (navigations) {
+//         navigations.map((entry: Navigation, index, navs) => {
+//             if (index === 0) {
+//                 session = {
+//                     user: entry.user,
+//                     device: entry.device,
+//                     sessionStart: entry.arrivedTime,
+//                     lastNavigation: entry.departedTime,
+//                     duration: 0,
+//                     depth: 0
+//                 };
+//                 // console.log('first', session);
+//             } else {
+//                 if (index !== navs.length - 1) { // not the last one
+//                     console.log('nav - 1', util.inspect(navs[index - 1]))
+//                     console.log('entry', util.inspect(navs[index - 1]))
+//                     console.log('nav + 1', util.inspect(navs[index - 1]))
+//                     // console.log('not last')
+//                     if (entry.user !== navs[index + 1].user) {
+//                         // this is the last entry for the current user
+//                         // get the "end" fields
+//                         session.depth = (session.depth >= entry.depth) ? session.depth : entry.depth;
+//                         session.lastNavigation = entry.arrivedTime;
+//                         session.duration = duration(session.sessionStart, session.lastNavigation);
+//                         // save it
+//                         console.log('saving at end of user', session);
+//                         let copy = { ...session };
+//                         sessions.push(copy);
+//                         // initialize for next user
+//                         session.user = navs[index + 1].user;
+//                         session.sessionStart = navs[index + 1].arrivedTime;
+//                         session.duration = 0;
+//                         session.lastNavigation = '';
+//                         session.depth = 0;
+//                         console.log('starting for', navs[index + 1].user, session);
+//                     } else {
+//                         // same user (or first entry for next user)
+//                         session.user = entry.user;
+//                         session.device = entry.device;
+//                         session.lastNavigation = entry.departedTime;
+//                         session.depth = (session.depth >= entry.depth) ? session.depth : entry.depth;
+//                         const testDuration = duration(entry.arrivedTime, entry.departedTime);
+//                         // console.log('duration', testDuration, 'timeout', TIMEOUT_DURATION, (Number(session.duration) > TIMEOUT_DURATION))
+//                         if (testDuration > TIMEOUT_DURATION) {
+//                             // end the current session, 
+//                             // reset lastNavigation to previous & set duration 
+//                             session.lastNavigation = navs[index - 1].departedTime;
+//                             session.duration = (!!navs[index - 1].departedTime) ? duration(session.sessionStart, session.lastNavigation) : 0;
+//                             // console.log('saving at timeout', session);
+//                             let copy = { ...session };
+//                             sessions.push(copy);
+//                             // start a new one
+//                             // initialize for next user/span  (next row might be a new user)
+//                             session.user = navs[index + 1].user;
+//                             session.sessionStart = navs[index + 1].arrivedTime;
+//                             session.duration = 0;
+//                             session.lastNavigation = '';
+//                             session.depth = 0;
+//                             // console.log('starting after timeout', navs[index + 1].user, session);
+//                         } // else console.log('setting for same', session);
+//                     };
+//                 } else {  // is the last one
+//                     session.lastNavigation = entry.arrivedTime;
+//                     session.duration = duration(session.sessionStart, session.lastNavigation);
+//                     session.depth = (session.depth >= entry.depth) ? session.depth : entry.depth;
+//                     let copy = { ...session };
+//                     sessions.push(copy);
+//                     // console.log('saving last', session);
+//                 }
+//             }
+//         });
+//     }
+//     if (sessions.length > 0) console.log('sessions', sessions.length);
+//     return sessions;
+// }
 
 function getSurveys(logs?: LogRow[]): Survey[] {
     let surveys: Survey[] = [];
@@ -542,10 +644,11 @@ function writeNavigations(navigations: Navigation[], fileName: string) {
             if (!excludeUser(s.user)) {
                 let dataRow: string =
                     s.user + config.delimiter
+                    + s.device + config.delimiter
                     + s.toPage + config.delimiter
                     + s.arrivedTime + config.delimiter
                     + s.departedTime + config.delimiter
-                    + s.duration + config.delimiter
+                    + Math.round(s.duration) + config.delimiter
                     + '\n';
                 fs.writeSync(fd, dataRow);
             }
@@ -553,6 +656,7 @@ function writeNavigations(navigations: Navigation[], fileName: string) {
         fs.closeSync(fd);
     }
 }
+
 // interface Session { user: string, device: string, sessionStart: string, lastNavigation: string, duration: number, depth: number };
 function writeSessions(sessions: Session[], fileName: string) {
     if (sessions.length > 0) {
@@ -565,7 +669,7 @@ function writeSessions(sessions: Session[], fileName: string) {
                     + s.device + config.delimiter
                     + s.sessionStart + config.delimiter
                     + s.lastNavigation + config.delimiter
-                    + s.duration + config.delimiter
+                    + Math.round(s.duration) + config.delimiter
                     + s.depth
                     + '\n';
                 fs.writeSync(fd, dataRow);
@@ -682,15 +786,15 @@ function getFileNames(): FileNames {
         twoDigit(now.getHours()) +
         twoDigit(now.getMinutes()) +
         twoDigit(now.getSeconds());
-    console.log(dateForFileName);
+    // console.log(dateForFileName);
     // set file names
     return {
-        admission: config.analyticsPath + 'Admissions' + dateForFileName + '.txt',
-        user: config.analyticsPath + 'User' + dateForFileName + '.txt',
-        userRole: config.analyticsPath + 'UserRoleEvent' + dateForFileName + '.txt',
-        session: config.analyticsPath + 'Session' + dateForFileName + '.txt',
-        navigation: config.analyticsPath + 'Navigation' + dateForFileName + '.txt',
-        survey: config.analyticsPath + 'Survey' + dateForFileName + '.txt',
+        admission: config.analyticsPath + 'Admissions' + dateForFileName + '.csv',
+        user: config.analyticsPath + 'User' + dateForFileName + '.csv',
+        userRole: config.analyticsPath + 'UserRoleEvent' + dateForFileName + '.csv',
+        session: config.analyticsPath + 'Session' + dateForFileName + '.csv',
+        navigation: config.analyticsPath + 'Navigation' + dateForFileName + '.csv',
+        survey: config.analyticsPath + 'Survey' + dateForFileName + '.csv',
     };
 }
 
