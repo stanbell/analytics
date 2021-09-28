@@ -1,13 +1,11 @@
 {
-  "name": "purge-photos",
+  "name": "analytics",
   "version": "1.0.0",
-  "description": "removes s3-stored images for any patient beyond access limit (discharge + 14d)",
+  "description": "extracts analytics data from EHC Caregiver logs",
   "main": "dist/index.js",
   "author": "Stan Bell, Juxly Inc",
   "license": "ISC",
   "dependencies": {
-    "aws-sdk": "^2.817.0",
-    "https": "^1.0.0",
     "mysql2": "^2.2.5"
   }
 }

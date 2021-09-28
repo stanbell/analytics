@@ -47,12 +47,11 @@ let previousLastLogDate: Date;
 
 db.init().then(() => {
     // execute on time interval
-    var interval = setInterval(() => {
-        go();
-    }, TEST_INTERVAL);
+    // var interval = setInterval(() => { go(); }, TEST_INTERVAL);
     // var interval = setInterval(() => { go(); }, ONE_DAY);
     console.log('started');
-    // go();
+    // execute once
+    go();
 });
 
 
@@ -108,7 +107,7 @@ async function go() {
 
         updatePreviousLastLog();
         console.log('done');
-        // process.exit();
+        process.exit();
     } catch (error) {
         console.log(error);
         console.log('end');
@@ -685,7 +684,7 @@ function previousLastLog(): Date {
 };
 
 function updatePreviousLastLog(): void {
-    const stats = fs.writeFileSync('lastLog', Date.now());
+    const stats = fs.writeFileSync('lastLog', Date.now().valueOf().toString());
 };
 
 function isNewerFile(logFile: fs.PathLike): boolean {
