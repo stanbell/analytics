@@ -1,4 +1,4 @@
-// pt-xref index.ts
+// analytics extract index.ts
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -8,6 +8,7 @@ import * as db from './mysql-connector';
 // import * as s3files from './s3';
 
 const ONE_DAY = 24 * 60 * 60 * 1000;
+const TEST_INTERVAL = 10 * 1000;
 
 interface LogRow {
     timestamp: string,
@@ -29,7 +30,11 @@ interface LogRow {
 
 
 interface Admission { patientId: string, hospitalId: string, encounterId: string, noLongerEligible: string };
-interface User { user: string, patientId: string, encounterId: string, hospitalId: string, eulaAcceptedDate: string, createdDate: string, currentRole: string, invitedDate: string, invitedBy: string, noLongerEligible: string, removedDate: string, removedBy: string };
+interface User {
+    user: string, patientId: string, encounterId: string, hospitalId: string, eulaAcceptedDate: string,
+    createdDate: string, currentRole: string, invitedDate: string, invitedBy: string, noLongerEligible: string,
+    removedDate: string, removedBy: string
+};
 interface UserRole { user: string, changedTo: string, changedDate: string, changedBy: string };
 interface Navigation { user: string, toPage: string, arrivedTime: string, departedTime: string, duration: number, depth: number, device: string, timeout: boolean };
 interface Session { user: string, device: string, sessionStart: string, lastNavigation: string, duration: number, depth: number };
@@ -37,32 +42,23 @@ interface Survey { user: string, responseTime: string, question?: string, respon
 
 interface FileNames { admission: string, user: string, userRole: string, session: string, navigation: string, survey: string };
 
-// enum entryType {
-//     CEAHTTP = 'CEA-HTTP',
-
-// };
-
-
-
 let dateForFileName: string = '';
+let previousLastLogDate: Date;
 
 db.init().then(() => {
     // execute on time interval
+    var interval = setInterval(() => {
+        go();
+    }, TEST_INTERVAL);
     // var interval = setInterval(() => { go(); }, ONE_DAY);
-    // console.log('started');
-    go();
+    console.log('started');
+    // go();
 });
 
 
-// TODO remember last log file read, don't read again
-
-// const isFile = (fileName: fs.PathLike) => {
-//     return fs.lstatSync(fileName).isFile();
-// };
-
-
-// async function go() {
 async function go() {
+    previousLastLogDate = previousLastLog();
+    console.log('analytics extract running for files after', previousLastLogDate.toISOString());
     try {
         // create the output directory if doesn't exist
         fs.mkdirSync(config.analyticsPath, { recursive: true });
@@ -73,47 +69,52 @@ async function go() {
         // get admissions
         const admissions = await getAdmissions();
         writeAdmissions(admissions, fileNames.admission);
+        console.log('admissions', admissions.length)
         // get users
         const users = await getUsers();
         writeUsers(users, fileNames.user);
+        console.log('users', users.length)
 
         // nav, userRoles, surveys from the logs
         let dataObj: LogRow[] | undefined;
         let navigations: Navigation[] = []; // | undefined = [];
+        let logCount = 0;
         // read logs directory
-        const logs = 
+        const logs =
             fs.readdirSync(config.logsPath).map((logFile: fs.PathLike) => {
                 return path.join(config.logsPath, logFile.toString());
             })
-            .filter((file: string) => {
-                // only the .logs
-                return (path.extname(file).toLowerCase() === '.log');
-            })
-            // const logsData = logs
-            .map(async (log: any) => {
-                console.log('log', log)
-                dataObj = getLogData(log);
-                if (dataObj && dataObj.length > 0) {
-                    writeUserRoles(getUserRoles(dataObj), fileNames.userRole);
-                    writeSurveys(getSurveys(dataObj), fileNames.survey);
-                    const navs = getNavigation(dataObj);
-                    navigations.push(...navs);
-                }
-            });
-            console.log('navigations', navigations.length)
-            writeNavigations(navigations, fileNames.navigation);
-            writeSessions(getSessions(navigations), fileNames.session);
+                .filter((file: string) => {
+                    // only the .logs
+                    return (path.extname(file).toLowerCase() === '.log');
+                })
+                .filter((file: string) => isNewerFile(file))  // only newer than last run
+                // const logsData = logs
+                .map(async (log: any) => {
+                    // console.log('log', log)
+                    logCount += 1;
+                    dataObj = getLogData(log);
+                    if (dataObj && dataObj.length > 0) {
+                        writeUserRoles(getUserRoles(dataObj), fileNames.userRole);
+                        writeSurveys(getSurveys(dataObj), fileNames.survey);
+                        const navs = getNavigation(dataObj);
+                        navigations.push(...navs);
+                    }
+                });
+        console.log('log files', logCount)
+        console.log('navigations', navigations.length)
+        writeNavigations(navigations, fileNames.navigation);
+        writeSessions(getSessions(navigations), fileNames.session);
 
+        updatePreviousLastLog();
         console.log('done');
-        process.exit();
+        // process.exit();
     } catch (error) {
         console.log(error);
         console.log('end');
         process.exit();
     }
 }
-
-
 
 function getLogData(log: string): LogRow[] | undefined {
     // convert the log's data to an object array
@@ -162,14 +163,10 @@ function getLogData(log: string): LogRow[] | undefined {
     // }
 }
 
-
 // db version
 async function getAdmissions(): Promise<Admission[]> {
-    // a new patient will be a proxy or patient signup
-    // since no one else can invite
-    // could look at invites too, to future proof?
     let admissions: Admission[] = []
-    console.log('admissions')
+    // console.log('admissions')
     const adms = await db.executeQuery('SELECT * FROM encounter', {});
     // console.log('adms', util.inspect(adms, true, 9, false));
     adms.map((a: any) => {
@@ -186,7 +183,7 @@ async function getAdmissions(): Promise<Admission[]> {
 // db version
 async function getUsers(): Promise<User[]> {
     let users: User[] = [];
-    console.log('users')
+    // console.log('users')
     const query = "SELECT u.comm_identifier, e.emr_patient_id, e.emr_encounter_id, e.hospital_id, u.created, ue.role, e.expired_date" +
         " FROM EHCCEA.user u" +
         " JOIN EHCCEA.user_encounter ue on ue.user_id = u.user_id" +
@@ -231,7 +228,6 @@ async function getUsers(): Promise<User[]> {
 // n variableContentFive?: string  
 // o variableContentSix?: string 
 
-
 function parseOtherObject(toBeParsed?: string): Object {
     var parsed: { [k: string]: any } = {};
     if (!!toBeParsed) {
@@ -249,16 +245,6 @@ function parseOtherObject(toBeParsed?: string): Object {
     return parsed;
 }
 
-// for parsing stuff from the call body
-// .filter((entry: LogRow) => {
-//     const callBody = entry.variableContentTwo;
-//     return callBody?.includes('resource:USER');
-// })
-// .filter((entry: LogRow) => {
-//     const callBody = entry.variableContentTwo;
-//     // return (callBody?.includes('ROLE') || callBody?.includes('CREATE'));
-//     return (callBody?.includes('CREATE'));
-// })
 function parseCallBody(body?: string): Object {
     var parsed: { [k: string]: any } = {};
     if (!!body) {
@@ -289,21 +275,13 @@ function getUserRoles(logs?: LogRow[]): UserRole[] {
         ur.map((entry: LogRow) => {
             // console.log('raw', entry.variableContentTwo)
             const y: any = parseCallBody(entry.variableContentTwo);
-            // const x = (entry.variableContentTwo) ?
-            //     entry.variableContentTwo.substring(entry.variableContentTwo.indexOf('{'))
-            //     : undefined
-            // const y = (x) ? JSON.parse(x) : undefined;
-            // console.log('object', util.inspect(y))
             userRoles.push({
                 user: y.commIdentifier,  // which one is the user being changed, and which the user doing the changing?
                 changedTo: y.role,
-                // user: y.commIdentifier,  // which one is the user being changed, and which the user doing the changing?
-                // changedTo: y.userRole,
                 changedDate: entry.timestamp,
                 changedBy: entry.user
             })
         });
-        if (userRoles.length > 0) console.log('userRoles', userRoles);
     }
     return userRoles;
 }
@@ -318,7 +296,8 @@ function getNavigation(logs?: LogRow[]): Navigation[] {
             return entry.entryType === 'CLIENT-NAV';
         })
         nav.map((entry: LogRow) => {
-            const toPage = parsePage(entry.variableContentOne);
+            let toPage = parsePage(entry.variableContentOne, entry.variableContentTwo);
+            // console.log('page', toPage)
             let navigation: Navigation = {
                 user: entry.user,
                 toPage: toPage.page,
@@ -384,57 +363,57 @@ function getSessions(navigations?: Navigation[]): Session[] {
                 a2.device.localeCompare(b2.device) ||
                 a2.arrivedTime.localeCompare(b2.arrivedTime));
         })
-        .map((entry: Navigation, index, navs) => {
-            if (debug) console.log(index, util.inspect(entry));
-            if (debug) console.log(session, 'session');
-            if (savedTheSession) {
-                session = {
-                    user: entry.user,
-                    device: entry.device,
-                    sessionStart: entry.arrivedTime,
-                    lastNavigation: entry.departedTime,
-                    duration: 0,
-                    depth: 0
-                };
-                if (debug) console.log('new session', session);
-                savedTheSession = false;
-            }
-            if (entry.timeout) {
-                // no end time, end of session
-                session.lastNavigation = entry.arrivedTime;
-                // session.duration = duration(session.sessionStart, session.lastNavigation);
-                if (debug) console.log('saving because timed out', session)
-                let copy = { ...session };
-                sessions.push(copy);
-                // start new session with the following entry
-                savedTheSession = true;
-            } else if (!entry.departedTime) {
-                // no end time, end of session
-                session.lastNavigation = entry.arrivedTime;
-                // session.duration = duration(session.sessionStart, session.lastNavigation);
-                if (debug) console.log('saving because no departed time', session)
-                let copy = { ...session };
-                sessions.push(copy);
-                // start new session with the following entry
-                savedTheSession = true;
-            } else if ((entry.device !== session.device)
-                || (entry.user !== session.user)) {
-                // different user or different device
-                // that's the end of the session, 
-                // session.duration = duration(session.sessionStart, session.lastNavigation);
-                if (debug) console.log('saving because different user or entry', session)
-                let copy = { ...session };
-                sessions.push(copy);
-                // start new session with the following entry
-                savedTheSession = true;
-            } else {
-                // update the session end time & depth
-                session.lastNavigation = entry.departedTime;
-                session.duration += entry.duration;
-                session.depth = (session.depth >= entry.depth) ? session.depth : entry.depth;
-                savedTheSession = false;
-            }
-        });
+            .map((entry: Navigation, index, navs) => {
+                if (debug) console.log(index, util.inspect(entry));
+                if (debug) console.log(session, 'session');
+                if (savedTheSession) {
+                    session = {
+                        user: entry.user,
+                        device: entry.device,
+                        sessionStart: entry.arrivedTime,
+                        lastNavigation: entry.departedTime,
+                        duration: 0,
+                        depth: 0
+                    };
+                    if (debug) console.log('new session', session);
+                    savedTheSession = false;
+                }
+                if (entry.timeout) {
+                    // no end time, end of session
+                    session.lastNavigation = entry.arrivedTime;
+                    // session.duration = duration(session.sessionStart, session.lastNavigation);
+                    if (debug) console.log('saving because timed out', session)
+                    let copy = { ...session };
+                    sessions.push(copy);
+                    // start new session with the following entry
+                    savedTheSession = true;
+                } else if (!entry.departedTime) {
+                    // no end time, end of session
+                    session.lastNavigation = entry.arrivedTime;
+                    // session.duration = duration(session.sessionStart, session.lastNavigation);
+                    if (debug) console.log('saving because no departed time', session)
+                    let copy = { ...session };
+                    sessions.push(copy);
+                    // start new session with the following entry
+                    savedTheSession = true;
+                } else if ((entry.device !== session.device)
+                    || (entry.user !== session.user)) {
+                    // different user or different device
+                    // that's the end of the session, 
+                    // session.duration = duration(session.sessionStart, session.lastNavigation);
+                    if (debug) console.log('saving because different user or entry', session)
+                    let copy = { ...session };
+                    sessions.push(copy);
+                    // start new session with the following entry
+                    savedTheSession = true;
+                } else {
+                    // update the session end time & depth
+                    session.lastNavigation = entry.departedTime;
+                    session.duration += entry.duration;
+                    session.depth = (session.depth >= entry.depth) ? session.depth : entry.depth;
+                    savedTheSession = false;
+                }
+            });
         if (!savedTheSession) {
             // write the last one, unless we just did
             // @ts-ignore
@@ -444,91 +423,9 @@ function getSessions(navigations?: Navigation[]): Session[] {
             sessions.push(copy);
         }
     }
-    if (sessions.length > 0) console.log('sessions', sessions.length);
+    console.log('sessions', sessions.length);
     return sessions;
 }
-// function getSessions(navigations?: Navigation[]): Session[] {
-//     // let sessions: Session[] = [];
-//     // get the first and last time values for each user
-//     // already sorted by user, device, time
-//     let sessions: Session[] = [];
-//     let session: Session;
-//     const TIMEOUT_DURATION = 60 * 5;  // 5 minutes
-//     if (navigations) {
-//         navigations.map((entry: Navigation, index, navs) => {
-//             if (index === 0) {
-//                 session = {
-//                     user: entry.user,
-//                     device: entry.device,
-//                     sessionStart: entry.arrivedTime,
-//                     lastNavigation: entry.departedTime,
-//                     duration: 0,
-//                     depth: 0
-//                 };
-//                 // console.log('first', session);
-//             } else {
-//                 if (index !== navs.length - 1) { // not the last one
-//                     console.log('nav - 1', util.inspect(navs[index - 1]))
-//                     console.log('entry', util.inspect(navs[index - 1]))
-//                     console.log('nav + 1', util.inspect(navs[index - 1]))
-//                     // console.log('not last')
-//                     if (entry.user !== navs[index + 1].user) {
-//                         // this is the last entry for the current user
-//                         // get the "end" fields
-//                         session.depth = (session.depth >= entry.depth) ? session.depth : entry.depth;
-//                         session.lastNavigation = entry.arrivedTime;
-//                         session.duration = duration(session.sessionStart, session.lastNavigation);
-//                         // save it
-//                         console.log('saving at end of user', session);
-//                         let copy = { ...session };
-//                         sessions.push(copy);
-//                         // initialize for next user
-//                         session.user = navs[index + 1].user;
-//                         session.sessionStart = navs[index + 1].arrivedTime;
-//                         session.duration = 0;
-//                         session.lastNavigation = '';
-//                         session.depth = 0;
-//                         console.log('starting for', navs[index + 1].user, session);
-//                     } else {
-//                         // same user (or first entry for next user)
-//                         session.user = entry.user;
-//                         session.device = entry.device;
-//                         session.lastNavigation = entry.departedTime;
-//                         session.depth = (session.depth >= entry.depth) ? session.depth : entry.depth;
-//                         const testDuration = duration(entry.arrivedTime, entry.departedTime);
-//                         // console.log('duration', testDuration, 'timeout', TIMEOUT_DURATION, (Number(session.duration) > TIMEOUT_DURATION))
-//                         if (testDuration > TIMEOUT_DURATION) {
-//                             // end the current session, 
-//                             // reset lastNavigation to previous & set duration 
-//                             session.lastNavigation = navs[index - 1].departedTime;
-//                             session.duration = (!!navs[index - 1].departedTime) ? duration(session.sessionStart, session.lastNavigation) : 0;
-//                             // console.log('saving at timeout', session);
-//                             let copy = { ...session };
-//                             sessions.push(copy);
-//                             // start a new one
-//                             // initialize for next user/span  (next row might be a new user)
-//                             session.user = navs[index + 1].user;
-//                             session.sessionStart = navs[index + 1].arrivedTime;
-//                             session.duration = 0;
-//                             session.lastNavigation = '';
-//                             session.depth = 0;
-//                             // console.log('starting after timeout', navs[index + 1].user, session);
-//                         } // else console.log('setting for same', session);
-//                     };
-//                 } else {  // is the last one
-//                     session.lastNavigation = entry.arrivedTime;
-//                     session.duration = duration(session.sessionStart, session.lastNavigation);
-//                     session.depth = (session.depth >= entry.depth) ? session.depth : entry.depth;
-//                     let copy = { ...session };
-//                     sessions.push(copy);
-//                     // console.log('saving last', session);
-//                 }
-//             }
-//         });
-//     }
-//     if (sessions.length > 0) console.log('sessions', sessions.length);
-//     return sessions;
-// }
 
 function getSurveys(logs?: LogRow[]): Survey[] {
     let surveys: Survey[] = [];
@@ -597,8 +494,8 @@ function writeUsers(users: User[], fileName: string) {
                 let dataRow: string =
                     s.user + config.delimiter
                     + s.patientId + config.delimiter
-                    + s.encounterId + config.delimiter
                     + s.hospitalId + config.delimiter
+                    + s.encounterId + config.delimiter
                     + s.eulaAcceptedDate + config.delimiter
                     + s.createdDate + config.delimiter
                     + s.currentRole + config.delimiter
@@ -714,13 +611,14 @@ function excludeUser(userId: string): boolean {
     return excludes.some((x: string) => x === userId);
 }
 
-function parsePage(url?: string): { page: string, depth: number } {
+function parsePage(url?: string, subNav?: string): { page: string, depth: number } {
+    // if a 2-column page, the goal selected shows in a separate column in the log
     let final = { page: '', depth: 0 };
     if (!!url) {
-        let parts = url.split('/').splice(4);
+        let urlParts = url.split('/').splice(4);
         // console.log('url', url, 'length', parts.length)
         // console.log(parts);
-        const parms = parts[parts.length - 1].split('?');
+        const parms = urlParts[urlParts.length - 1].split('?');
         // console.log(parms);
 
         let page: string = '';
@@ -748,28 +646,55 @@ function parsePage(url?: string): { page: string, depth: number } {
                     }
                     break;
                 default:
-                    // "standard" page
-                    page = parms[parms.length - 1].toLowerCase();
-                    // if (page.includes('pages')) console.log('url', url);
-                    // remove 'goalName' if present
-                    // eg "://localhost/#/goals/goal-category/Mobility?goalName=Walk%20150%20Feet"
-                    page = page.replace(/goalname=/g, '');
+                    if (!!subNav) {
+                        // 2-column page, goalname is in following column in log entry
+                        // eg goal:Walk 10 Feet
+                        page = subNav;
+                        // remove 'goal:' if present
+                        page = page.replace(/goal:/g, '');
+                        // urlParts.push(page);
+                    } else {
+                        // 1-column page, goalname is in parms
+                        page = parms[parms.length - 1].toLowerCase();
+                        // remove 'goalName' if present
+                        // eg "://localhost/#/goals/goal-category/Mobility?goalName=Walk%20150%20Feet"
+                        page = page.replace(/goalname=/g, '');
+                    }
 
                     // special case for some pages
                     // eg "://myehccaregiver.com/#/discharge/resources/materials/Patient%20Summary/XR-3036105856"
-                    if (parts.includes('materials')) page = parts[parts.length - 2].toLowerCase();  // removes specific document id
+                    if (urlParts.includes('materials')) page = urlParts[urlParts.length - 2].toLowerCase();  // removes specific document id
                     // eg "://myehccaregiver.com/#/invite/user-profile/7325338866"
-                    if (parts.includes('invite')) page = 'invite';  // removes invited user id
+                    if (urlParts.includes('invite')) page = 'invite';  // removes invited user id
             }
         } else page = 'splash'; // should never be?
         page = page.replace(/%20/g, ' ');
         // console.log('page', page)
-
         final.page = page;
-        if (page !== 'splash') final.depth = parts.length;
+        if (page !== 'splash') final.depth = urlParts.length;
     }
     return final;
 }
+
+function previousLastLog(): Date {
+    const lastDate = fs.readFileSync('./lastLog').toString();
+    console.log(new Date(+lastDate));
+    return new Date(+lastDate);
+    // const stats = fs.statSync('./lastLog');
+    // return stats.mtime;
+};
+
+function updatePreviousLastLog(): void {
+    const stats = fs.writeFileSync('lastLog', Date.now());
+};
+
+function isNewerFile(logFile: fs.PathLike): boolean {
+    // could instead parse the time out of the file names
+    const stats = fs.statSync(logFile);
+    // console.log(stats.mtime, previousLastLogDate, (stats.mtime.valueOf() > previousLastLogDate.valueOf()));
+    return (stats.mtime.valueOf() > previousLastLogDate.valueOf());
+    // return stats.mtime;
+};
 
 function duration(start: Date | string, end: Date | string): number {
     const startAt = (util.types.isDate(start)) ? start : new Date(start);
