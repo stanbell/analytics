@@ -38,7 +38,7 @@ interface User {
 interface UserRole { user: string, changedTo: string, changedDate: string, changedBy: string };
 interface Navigation { user: string, toPage: string, arrivedTime: string, departedTime: string, duration: number, depth: number, device: string, timeout: boolean };
 interface Session { user: string, device: string, sessionStart: string, lastNavigation: string, duration: number, depth: number };
-interface Survey { user: string, responseTime: string, question?: string, response?: string, responseIndex?: number[], comment?: string };
+interface Survey { user: string, responseTime: string, question?: string, questionIndex?: number, response?: string, responseIndex?: number[], comment?: string };
 
 interface FileNames { admission: string, user: string, userRole: string, session: string, navigation: string, survey: string };
 
@@ -60,7 +60,15 @@ async function go() {
     console.log('analytics extract running for files after', previousLastLogDate.toISOString());
     try {
         // create the output directory if doesn't exist
-        fs.mkdirSync(config.analyticsPath, { recursive: true });
+        try {
+            fs.mkdirSync(config.analyticsPath, { recursive: true });
+        } catch (error) {
+            if (error.code !== 'EEXIST') {
+                console.log(error);
+                console.log('end');
+                process.exit();
+            }
+        }
 
         let fileNames = getFileNames();
 
@@ -426,6 +434,17 @@ function getSessions(navigations?: Navigation[]): Session[] {
     return sessions;
 }
 
+
+// g patient: string,
+// h hospital: string,
+// i message: string, 'Respond to Survey'
+// j variableContentOne?: string, device
+// k variableContentTwo?: string, index=question number
+// l variableContentThree?: string  question text
+// m variableContentFour?: string   response number(s)
+// n variableContentFive?: string  response(s) text
+// o variableContentSix?: string  comment
+
 function getSurveys(logs?: LogRow[]): Survey[] {
     let surveys: Survey[] = [];
     if (!!logs) {
@@ -444,10 +463,13 @@ function getSurveys(logs?: LogRow[]): Survey[] {
                         if (isNaN(responseIndex[responseIndex.length - 1])) responseIndex[responseIndex.length - 1] = 0;
                     }
                 }
+                const qI: string | undefined = entry.variableContentTwo?.substring(entry.variableContentTwo.indexOf(':"') + 2).slice(0, -1).replace(/"/g, '');
+                const questionIndex = (!!qI) ? parseInt(qI) : undefined;
                 const survey: Survey = {
                     user: entry.user,
                     responseTime: entry.timestamp,
                     question: entry.variableContentThree?.substring(entry.variableContentThree.indexOf(':"') + 2).slice(0, -1).replace(/"/g, ''),
+                    questionIndex: questionIndex,
                     response: (entry.variableContentFive)
                         ? entry.variableContentFive.substring(entry.variableContentFive.indexOf(':"') + 2).slice(0, -1).replace(/"/g, '').replace(/undefined/g, '')
                         : '',
@@ -584,6 +606,7 @@ function writeSurveys(surveys: Survey[], fileName: string) {
                     s.user + config.delimiter
                     + s.responseTime + config.delimiter
                     + s.question + config.delimiter
+                    + s.questionIndex + config.delimiter
                     + s.response + config.delimiter
                     + s.responseIndex?.join(',') + config.delimiter
                     + s.comment
@@ -606,6 +629,8 @@ function excludeUser(userId: string): boolean {
         "caregivertestproxy@encompasshealth.com",
         "ehcsurrogate@gmail.com",
         "eileen.thayer@encompasshealth.com",
+        "2222222222",
+        "7325338866",
     ];
     return excludes.some((x: string) => x === userId);
 }

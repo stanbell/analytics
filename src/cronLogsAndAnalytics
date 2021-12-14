@@ -1,0 +1,15 @@
+# logs
+*/10 * * * * /home/ec2-user/run-post-logs.bash
+5 * * * * /home/ec2-user/logs-transfer.bash
+# analytics
+0 3 * * * /home/ec2-user/run-analytics.bash
+20 3 * * * /home/ec2-user/analytics-transfer.bash
+# patient cross-reference
+0 */6 * * * /home/ec2-user/run-pt-xref.bash
+20 */6 * * * /home/ec2-user/pt-xref-transfer.bash
+# user-role cross-reference
+2 */6 * * * /home/ec2-user/run-user-role.bash
+17 */6 * * * /home/ec2-user/user-role-transfer.bash
+# evidence
+*/10 * * * * /home/ec2-user/cron-ran
+# end
